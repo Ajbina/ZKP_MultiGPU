@@ -1,0 +1,3 @@
+/home/syn324/projects/zkp/new/build/CMakeFiles/msm.dir
+/home/syn324/projects/zkp/new/build/CMakeFiles/edit_cache.dir
+/home/syn324/projects/zkp/new/build/CMakeFiles/rebuild_cache.dir

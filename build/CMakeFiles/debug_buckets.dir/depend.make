@@ -1,0 +1,2 @@
+# Empty dependencies file for debug_buckets.
+# This may be replaced when dependencies are built.
