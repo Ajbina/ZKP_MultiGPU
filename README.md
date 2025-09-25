@@ -12,9 +12,9 @@ This repository contains optimized GPU implementations of Multi-Scalar Multiplic
 │   ├── kernel.cuh         # CUDA kernel headers
 │   ├── common.cu          # Common utility functions
 │   └── common.cuh         # Common headers and definitions
-├── executables/           # Compiled binaries
-│   ├── msm_multigpu       # Multi-GPU executable
-│   ├── msm_single_gpu     # Single GPU executable
+├── bin/                   # Compiled binaries
+│   ├── msm_main           # Multi-GPU executable
+│   ├── msm_single         # Single GPU executable
 │   └── msm_smallcheck     # Legacy executable
 ├── scripts/               # Analysis and plotting scripts
 │   ├── plot_comparison.py # Single vs Multi-GPU comparison
@@ -24,11 +24,11 @@ This repository contains optimized GPU implementations of Multi-Scalar Multiplic
 ├── data/                  # Performance data files
 │   ├── multi_gpu_timing.csv
 │   ├── single_gpu_timing.csv
-│   └── test_timing.csv
+│   └── 
 ├── plots/                 # Generated plots and visualizations
-│   ├── gpu_comparison.png
-│   ├── multi_gpu_performance.png
-│   └── msm_performance_comparison.png
+│   ├── gpu_comparison_components.png #single and multi gpu comparison
+│   ├── 
+│   └── 
 ├── build/                 # Build artifacts
 ├── CMakeLists.txt         # CMake configuration
 ├── requirements.txt       # Python dependencies
@@ -47,13 +47,13 @@ This repository contains optimized GPU implementations of Multi-Scalar Multiplic
 #### Multi-GPU Implementation
 ```bash
 cd src
-nvcc -O2 main.cu kernel.cu common.cu -o ../executables/msm_multigpu
+nvcc -O2 main.cu kernel.cu common.cu -o ../bin/msm_main
 ```
 
 #### Single GPU Implementation
 ```bash
 cd src
-nvcc -O2 main_single_gpu.cu kernel.cu common.cu -o ../executables/msm_single_gpu
+nvcc -O2 main_single_gpu.cu kernel.cu common.cu -o ../bin/msm_single_gpu
 ```
 
 ### Running Tests
@@ -61,22 +61,22 @@ nvcc -O2 main_single_gpu.cu kernel.cu common.cu -o ../executables/msm_single_gpu
 #### Toy Test (Correctness Check)
 ```bash
 # Multi-GPU toy test
-./executables/msm_multigpu --toy2
+./bin/msm_main --toy2
 
 # Single GPU toy test
-./executables/msm_single_gpu --toy2
+./bin/msm_single --toy2
 ```
 
 #### Performance Benchmarking
 ```bash
 # Multi-GPU performance test
-./executables/msm_multigpu
+./bin/msm_main
 
 # Single GPU performance test
-./executables/msm_single_gpu
+./bin/msm_single
 
 # Custom problem sizes
-./executables/msm_multigpu --N=64,128,256,512,1024
+./bin/msm_main --N=64,128,256,512,1024
 ```
 
 ## 📊 Performance Analysis
@@ -84,7 +84,7 @@ nvcc -O2 main_single_gpu.cu kernel.cu common.cu -o ../executables/msm_single_gpu
 ### Generate Performance Plots
 ```bash
 # Compare single vs multi-GPU performance
-python3 scripts/plot_comparison.py
+python3 scripts/compare_timings.py
 
 # Analyze multi-GPU performance only
 python3 scripts/plot_multi_gpu.py
@@ -93,17 +93,10 @@ python3 scripts/plot_multi_gpu.py
 python3 scripts/plot_performance.py
 ```
 
-### Automated Performance Testing
-```bash
-# Run comprehensive performance tests
-bash scripts/run_performance_test.sh
-```
-
 ## 🔧 Implementation Details
 
 ### Multi-GPU Distributed Approach
-- **Bucket Distribution**: Evenly distributes buckets across available GPUs
-- **Load Balancing**: Handles cases where total buckets don't divide evenly
+- **Window Distribution**: Evenly distributes windows across available GPUs
 - **Result Combination**: Combines partial results from each GPU on CPU
 - **Memory Efficiency**: Each GPU processes only its assigned subset
 
@@ -149,38 +142,20 @@ N,GPU_Total,GPU_Compute,GPU_Transfer,GPU_Bucket,GPU_Window
 ```
 
 ### Generated Plots
-- **gpu_comparison.png**: Single vs Multi-GPU performance comparison
-- **multi_gpu_performance.png**: Detailed multi-GPU analysis
-- **msm_performance_comparison.png**: General performance visualization
+- **gpu_comparison_components.png**: Single vs Multi-GPU performance comparison components wise
 
 ## 🔍 Analysis Scripts
 
 ### plot_comparison.py
-- **Main Plot**: Total execution time comparison
-- **Speedup Analysis**: Shows multi-GPU speedup over single GPU
-- **Console Analysis**: Detailed performance statistics
+-
 
-### plot_multi_gpu.py
-- **4-Panel Analysis**: Total time, operation breakdown, transfer overhead, throughput
-- **Comprehensive Metrics**: Detailed multi-GPU performance analysis
-
-### plot_performance.py
-- **General Analysis**: Works with any timing CSV file
-- **Base-2 Log Scale**: Optimized for power-of-2 problem sizes
 
 ## 🛠️ Development
 
-### Adding New Features
-1. Modify source files in `src/`
-2. Update compilation commands
-3. Test with toy examples first
-4. Run performance benchmarks
-5. Update documentation
+
 
 ### Debugging
-- Use `--print-input` flag for detailed input inspection
-- Run toy tests for correctness verification
-- Check CSV output for timing breakdowns
+
 
 ## 📚 Technical Background
 
@@ -194,23 +169,5 @@ Multi-Scalar Multiplication computes: `∑(i=0 to N-1) scalar[i] * base[i]`
 
 ### GPU Optimization
 - **Parallel Bucket Processing**: Each thread handles one bucket
-- **Memory Coalescing**: Optimized memory access patterns
-- **Kernel Fusion**: Combined bucket and window operations
 
-## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- CUDA programming best practices
-- Elliptic curve cryptography fundamentals
-- Performance optimization techniques 
