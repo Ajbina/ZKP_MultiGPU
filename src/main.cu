@@ -174,8 +174,9 @@ int main(int argc, char** argv) {
         std::cout << "Using multi-GPU setup with " << device_count << " GPUs\n";
     }
 
-    std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608,12000000,16777216};
-    // std::string csv_name = "test_timing.csv";
+    std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608};
+    //std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608,12000000,16777216};
+    //std::string csv_name = "test_timing.csv";
     //std::string csv_name = "gpu_only_timing.csv";
     std::string csv_name = "multi_gpu_timing.csv";
     bool print_input = false;
@@ -319,15 +320,16 @@ int main(int argc, char** argv) {
             combined_window_sums[w].Z = fq(0);
         }
 
-        auto total_gpu_start = std::chrono::high_resolution_clock::now();
-        auto total_gpu_tx_h2d = 0;
-        auto total_gpu_bucket = 0;
-        auto total_gpu_window = 0;
-        auto total_gpu_tx_d2h = 0;
+        // auto total_gpu_start = std::chrono::high_resolution_clock::now(); // replaced by CUDA overall events
+        // Track per-phase wall-clock time as the maximum across GPUs (not sum)
+        long long total_gpu_tx_h2d = 0;
+        long long total_gpu_bucket = 0;
+        long long total_gpu_window = 0;
+        long long total_gpu_tx_d2h = 0;
 
-        // Distribute buckets across GPUs
-        int buckets_per_gpu = total_buckets / device_count;
-        int remaining_buckets = total_buckets % device_count;
+        // Distribute WINDOWS across GPUs (keep per-window bucket layout intact)
+        int windows_per_gpu = windows / device_count;
+        int remaining_windows = windows % device_count;
 
         // Pre-allocate memory and create streams for each GPU
         std::vector<cudaStream_t> streams(device_count);
@@ -339,40 +341,63 @@ int main(int argc, char** argv) {
         std::vector<std::vector<ECPoint>> gpu_all_points_vec(device_count);
         std::vector<std::vector<int>> gpu_bucket_sizes_vec(device_count);
         std::vector<std::vector<int>> gpu_bucket_offsets_vec(device_count);
+        // CUDA events for timing per GPU
+        std::vector<cudaEvent_t> ev_h2d_start(device_count), ev_h2d_end(device_count);
+        std::vector<cudaEvent_t> ev_bucket_start(device_count), ev_bucket_end(device_count);
+        std::vector<cudaEvent_t> ev_window_start(device_count), ev_window_end(device_count);
+        std::vector<cudaEvent_t> ev_d2h_start(device_count), ev_d2h_end(device_count);
+        std::vector<cudaEvent_t> ev_overall_start(device_count), ev_overall_end(device_count);
 
         // Initialize streams and prepare data structures for each GPU
         for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
             CUDA_CALL(cudaSetDevice(gpu_id));
             CUDA_CALL(cudaStreamCreate(&streams[gpu_id]));
+            // Create CUDA events for this GPU
+            CUDA_CALL(cudaEventCreate(&ev_h2d_start[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_h2d_end[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_bucket_start[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_bucket_end[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_window_start[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_window_end[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_d2h_start[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_d2h_end[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_overall_start[gpu_id]));
+            CUDA_CALL(cudaEventCreate(&ev_overall_end[gpu_id]));
             
-            // Calculate bucket range for this GPU
-            int start_bucket = gpu_id * buckets_per_gpu + std::min(gpu_id, remaining_buckets);
-            int end_bucket = start_bucket + buckets_per_gpu + (gpu_id < remaining_buckets ? 1 : 0);
-            int num_buckets_this_gpu = end_bucket - start_bucket;
+            // Calculate window range for this GPU
+            int start_window = gpu_id * windows_per_gpu + std::min(gpu_id, remaining_windows);
+            int end_window = start_window + windows_per_gpu + (gpu_id < remaining_windows ? 1 : 0);
+            int windows_this_gpu = end_window - start_window;
+            int num_buckets_this_gpu = windows_this_gpu * num_buckets;
             
-            // Extract bucket data for this GPU
+            // Extract per-GPU data for assigned windows (preserve per-window bucket layout)
             std::vector<ECPoint> gpu_all_points;
             std::vector<int> gpu_bucket_sizes(num_buckets_this_gpu);
             std::vector<int> gpu_bucket_offsets(num_buckets_this_gpu + 1);
-            
             int point_idx = 0;
             gpu_bucket_offsets[0] = 0;
-            for (int i = 0; i < num_buckets_this_gpu; ++i) {
-                int global_bucket_idx = start_bucket + i;
-                gpu_bucket_sizes[i] = bucket_sizes[global_bucket_idx];
-                for (int j = 0; j < gpu_bucket_sizes[i]; ++j) {
-                    gpu_all_points.push_back(all_points[bucket_offsets[global_bucket_idx] + j]);
+            for (int w_local = 0; w_local < windows_this_gpu; ++w_local) {
+                int w_global = start_window + w_local;
+                int base_bucket = w_global * num_buckets;
+                for (int b = 0; b < num_buckets; ++b) {
+                    int global_bucket_idx = base_bucket + b;
+                    int local_bucket_idx = w_local * num_buckets + b;
+                    int size = bucket_sizes[global_bucket_idx];
+                    gpu_bucket_sizes[local_bucket_idx] = size;
+                    for (int j = 0; j < size; ++j) {
+                        gpu_all_points.push_back(all_points[bucket_offsets[global_bucket_idx] + j]);
+                    }
+                    gpu_bucket_offsets[local_bucket_idx + 1] = (int)gpu_all_points.size();
                 }
-                gpu_bucket_offsets[i + 1] = gpu_all_points.size();
             }
-
+ 
             // Store data for this GPU
             gpu_all_points_vec[gpu_id] = gpu_all_points;
             gpu_bucket_sizes_vec[gpu_id] = gpu_bucket_sizes;
             gpu_bucket_offsets_vec[gpu_id] = gpu_bucket_offsets;
 
             // Allocate GPU memory
-            int total_points_this_gpu = gpu_all_points.size();
+            int total_points_this_gpu = (int)gpu_all_points.size();
             ECPoint *d_all_points = nullptr, *d_bucket_sums = nullptr, *d_window_sums = nullptr;
             int *d_bucket_sizes = nullptr, *d_bucket_offsets = nullptr;
 
@@ -380,7 +405,7 @@ int main(int argc, char** argv) {
             CUDA_CALL(cudaMalloc(&d_bucket_sizes,   num_buckets_this_gpu * (int)sizeof(int)));
             CUDA_CALL(cudaMalloc(&d_bucket_offsets, (num_buckets_this_gpu + 1) * (int)sizeof(int)));
             CUDA_CALL(cudaMalloc(&d_bucket_sums,    num_buckets_this_gpu * (int)sizeof(ECPoint)));
-            CUDA_CALL(cudaMalloc(&d_window_sums,    windows * (int)sizeof(ECPoint)));
+            CUDA_CALL(cudaMalloc(&d_window_sums,    windows_this_gpu * (int)sizeof(ECPoint)));
 
             // Store device pointers
             d_all_points_vec[gpu_id] = d_all_points;
@@ -389,19 +414,23 @@ int main(int argc, char** argv) {
             d_bucket_sums_vec[gpu_id] = d_bucket_sums;
             d_window_sums_vec[gpu_id] = d_window_sums;
 
-            std::cout << "GPU " << gpu_id << " prepared: buckets " << start_bucket << "-" << (end_bucket-1) 
-                      << " (" << num_buckets_this_gpu << " buckets, " << total_points_this_gpu << " points)\n";
+            std::cout << "GPU " << gpu_id << " prepared: windows " << start_window << "-" << (end_window-1) 
+                      << " (" << windows_this_gpu << " windows, " << num_buckets_this_gpu << " buckets, " << total_points_this_gpu << " points)\n";
         }
 
         // Launch parallel operations on all GPUs
         for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
             CUDA_CALL(cudaSetDevice(gpu_id));
             
-            int num_buckets_this_gpu = gpu_bucket_sizes_vec[gpu_id].size();
-            int total_points_this_gpu = gpu_all_points_vec[gpu_id].size();
+            int num_buckets_this_gpu = (int)gpu_bucket_sizes_vec[gpu_id].size();
+            int total_points_this_gpu = (int)gpu_all_points_vec[gpu_id].size();
+            int windows_this_gpu = num_buckets_this_gpu / num_buckets;
             
-            // Asynchronous H2D transfer
-            auto gpu_tx_h2d_start = std::chrono::high_resolution_clock::now();
+            // Overall start (before H2D)
+            CUDA_CALL(cudaEventRecord(ev_overall_start[gpu_id], streams[gpu_id]));
+
+            // Asynchronous H2D transfer (timed with CUDA events)
+            CUDA_CALL(cudaEventRecord(ev_h2d_start[gpu_id], streams[gpu_id]));
             if (total_points_this_gpu)
                 CUDA_CALL(cudaMemcpyAsync(d_all_points_vec[gpu_id], gpu_all_points_vec[gpu_id].data(), 
                                          total_points_this_gpu * sizeof(ECPoint), cudaMemcpyHostToDevice, streams[gpu_id]));
@@ -409,69 +438,96 @@ int main(int argc, char** argv) {
                                      num_buckets_this_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[gpu_id]));
             CUDA_CALL(cudaMemcpyAsync(d_bucket_offsets_vec[gpu_id], gpu_bucket_offsets_vec[gpu_id].data(), 
                                      (num_buckets_this_gpu + 1) * sizeof(int), cudaMemcpyHostToDevice, streams[gpu_id]));
-            auto gpu_tx_h2d_end = std::chrono::high_resolution_clock::now();
-            auto gpu_tx_h2d_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_tx_h2d_end - gpu_tx_h2d_start).count();
-            total_gpu_tx_h2d += gpu_tx_h2d_us;
+            CUDA_CALL(cudaEventRecord(ev_h2d_end[gpu_id], streams[gpu_id]));
 
-            // Launch bucket sums kernel asynchronously
+            // Launch bucket sums kernel asynchronously (timed with CUDA events)
             int threads = 256;
             int blocks = (num_buckets_this_gpu + threads - 1) / threads;
-
-            auto gpu_bucket_start = std::chrono::high_resolution_clock::now();
+            CUDA_CALL(cudaEventRecord(ev_bucket_start[gpu_id], streams[gpu_id]));
             sum_bucket_points_kernel<<<blocks, threads, 0, streams[gpu_id]>>>(d_all_points_vec[gpu_id], 
                                                                              d_bucket_sizes_vec[gpu_id], 
                                                                              d_bucket_offsets_vec[gpu_id], 
                                                                              d_bucket_sums_vec[gpu_id], 
                                                                              num_buckets_this_gpu);
-            auto gpu_bucket_end = std::chrono::high_resolution_clock::now();
-            auto gpu_bucket_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_bucket_end - gpu_bucket_start).count();
-            total_gpu_bucket += gpu_bucket_us;
+            CUDA_CALL(cudaEventRecord(ev_bucket_end[gpu_id], streams[gpu_id]));
 
-            // Launch window sums kernel asynchronously
+            // Launch window sums kernel asynchronously (timed with CUDA events)
             int window_threads = 256;
-            int window_blocks = (windows + window_threads - 1) / window_threads;
-
-            auto gpu_window_start = std::chrono::high_resolution_clock::now();
+            int window_blocks = (windows_this_gpu + window_threads - 1) / window_threads;
+            CUDA_CALL(cudaEventRecord(ev_window_start[gpu_id], streams[gpu_id]));
             sum_window_buckets_kernel<<<window_blocks, window_threads, 0, streams[gpu_id]>>>(d_bucket_sums_vec[gpu_id], 
                                                                                             d_window_sums_vec[gpu_id], 
-                                                                                            windows, num_buckets_this_gpu);
-            auto gpu_window_end = std::chrono::high_resolution_clock::now();
-            auto gpu_window_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_window_end - gpu_window_start).count();
-            total_gpu_window += gpu_window_us;
+                                                                                            windows_this_gpu, num_buckets);
+            CUDA_CALL(cudaEventRecord(ev_window_end[gpu_id], streams[gpu_id]));
         }
+
+        long long max_overall_us = 0;
 
         // Wait for all GPUs to complete and collect results
         std::vector<std::vector<ECPoint>> gpu_window_sums_vec(device_count);
         for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
             CUDA_CALL(cudaSetDevice(gpu_id));
             
-            // Wait for this GPU to complete
+            // Wait for this GPU to complete H2D and kernels
             CUDA_CALL(cudaStreamSynchronize(streams[gpu_id]));
             
-            // Asynchronous D2H transfer
-            std::vector<ECPoint> gpu_window_sums(windows);
-            auto gpu_tx_d2h_start = std::chrono::high_resolution_clock::now();
+            // Accumulate H2D, bucket, and window timings using CUDA events
+            float ms = 0.0f;
+            CUDA_CALL(cudaEventElapsedTime(&ms, ev_h2d_start[gpu_id], ev_h2d_end[gpu_id]));
+            total_gpu_tx_h2d = std::max(total_gpu_tx_h2d, (long long)(ms * 1000.0f));
+            CUDA_CALL(cudaEventElapsedTime(&ms, ev_bucket_start[gpu_id], ev_bucket_end[gpu_id]));
+            total_gpu_bucket = std::max(total_gpu_bucket, (long long)(ms * 1000.0f));
+            CUDA_CALL(cudaEventElapsedTime(&ms, ev_window_start[gpu_id], ev_window_end[gpu_id]));
+            total_gpu_window = std::max(total_gpu_window, (long long)(ms * 1000.0f));
+
+            // Asynchronous D2H transfer (timed with CUDA events)
+            int windows_this_gpu = (int)gpu_bucket_sizes_vec[gpu_id].size() / num_buckets;
+            std::vector<ECPoint> gpu_window_sums(windows_this_gpu);
+            CUDA_CALL(cudaEventRecord(ev_d2h_start[gpu_id], streams[gpu_id]));
             CUDA_CALL(cudaMemcpyAsync(gpu_window_sums.data(), d_window_sums_vec[gpu_id], 
-                                     windows * sizeof(ECPoint), cudaMemcpyDeviceToHost, streams[gpu_id]));
+                                     windows_this_gpu * sizeof(ECPoint), cudaMemcpyDeviceToHost, streams[gpu_id]));
+            CUDA_CALL(cudaEventRecord(ev_d2h_end[gpu_id], streams[gpu_id]));
+            // Also mark overall end after final D2H copy is queued
+            CUDA_CALL(cudaEventRecord(ev_overall_end[gpu_id], streams[gpu_id]));
             CUDA_CALL(cudaStreamSynchronize(streams[gpu_id])); // Wait for transfer to complete
-            auto gpu_tx_d2h_end = std::chrono::high_resolution_clock::now();
-            auto gpu_tx_d2h_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_tx_d2h_end - gpu_tx_d2h_start).count();
-            total_gpu_tx_d2h += gpu_tx_d2h_us;
+            CUDA_CALL(cudaEventElapsedTime(&ms, ev_d2h_start[gpu_id], ev_d2h_end[gpu_id]));
+            total_gpu_tx_d2h = std::max(total_gpu_tx_d2h, (long long)(ms * 1000.0f));
+            // Compute overall elapsed from events and track max
+            CUDA_CALL(cudaEventElapsedTime(&ms, ev_overall_start[gpu_id], ev_overall_end[gpu_id]));
+            long long overall_us = (long long)(ms * 1000.0f);
+            if (overall_us > max_overall_us) max_overall_us = overall_us;
 
             gpu_window_sums_vec[gpu_id] = gpu_window_sums;
         }
 
-        // Combine results from all GPUs
+        // Combine results from all GPUs by placing window sums in the correct positions (no double work)
+        int start_window = 0;
         for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
-            for (int w = 0; w < windows; ++w) {
-                combined_window_sums[w] = combined_window_sums[w] + gpu_window_sums_vec[gpu_id][w];
+            int windows_this_gpu = (int)gpu_window_sums_vec[gpu_id].size();
+            for (int w_local = 0; w_local < windows_this_gpu; ++w_local) {
+                combined_window_sums[start_window + w_local] = gpu_window_sums_vec[gpu_id][w_local];
             }
+            start_window += windows_this_gpu;
+        }
+        if (start_window != windows) {
+            std::cerr << "[WARN] Combined windows coverage mismatch: got " << start_window << ", expected " << windows << "\n";
         }
 
         // Cleanup
         for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
             CUDA_CALL(cudaSetDevice(gpu_id));
             CUDA_CALL(cudaStreamDestroy(streams[gpu_id]));
+            // Destroy CUDA events
+            CUDA_CALL(cudaEventDestroy(ev_h2d_start[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_h2d_end[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_bucket_start[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_bucket_end[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_window_start[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_window_end[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_d2h_start[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_d2h_end[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_overall_start[gpu_id]));
+            CUDA_CALL(cudaEventDestroy(ev_overall_end[gpu_id]));
             CUDA_CALL(cudaFree(d_all_points_vec[gpu_id]));
             CUDA_CALL(cudaFree(d_bucket_sizes_vec[gpu_id]));
             CUDA_CALL(cudaFree(d_bucket_offsets_vec[gpu_id]));
@@ -479,8 +535,9 @@ int main(int argc, char** argv) {
             CUDA_CALL(cudaFree(d_window_sums_vec[gpu_id]));
         }
 
-        auto total_gpu_end = std::chrono::high_resolution_clock::now();
-        auto total_gpu_us = std::chrono::duration_cast<std::chrono::microseconds>(total_gpu_end - total_gpu_start).count();
+        // auto total_gpu_end = std::chrono::high_resolution_clock::now(); // replaced by CUDA overall events
+        // auto total_gpu_us = std::chrono::duration_cast<std::chrono::microseconds>(total_gpu_end - total_gpu_start).count();
+        auto total_gpu_us = max_overall_us; // use max across GPUs of overall event timing
 
         // CPU window (same weighting) for cross-check - COMMENTED OUT
         /*

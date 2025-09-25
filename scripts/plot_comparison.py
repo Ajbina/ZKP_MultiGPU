@@ -10,12 +10,21 @@ import numpy as np
 import seaborn as sns
 from matplotlib.ticker import LogLocator
 import sys
+import os
+
+def get_plots_dir():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
+    plots_dir = os.path.join(project_root, 'plots')
+    os.makedirs(plots_dir, exist_ok=True)
+    return plots_dir
 
 def plot_performance_comparison(single_gpu_csv='../data/single_gpu_timing.csv', 
                                multi_gpu_csv='../data/multi_gpu_timing.csv'):
     """Compare single GPU vs multi-GPU MSM performance"""
     
     try:
+        plots_dir = get_plots_dir()
         # Read both CSV files
         print("Loading performance data...")
         single_df = pd.read_csv(single_gpu_csv)
@@ -39,40 +48,58 @@ def plot_performance_comparison(single_gpu_csv='../data/single_gpu_timing.csv',
         plt.style.use('default')
         sns.set_palette("husl")
         
-        # Create single main plot
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        fig.suptitle('Single GPU vs Multi-GPU MSM Performance Comparison', fontsize=16, fontweight='bold')
-        
-        # Get data ranges for x-axis limits
+        # Create multi-panel plots for each component
+        metrics = [
+            ('GPU_Total', 'Total Execution Time (μs)'),
+            ('GPU_Compute', 'Compute Time (μs)'),
+            ('GPU_Transfer', 'Transfer Time (μs) [H2D + D2H]'),
+            ('GPU_Bucket', 'Bucket Kernel Time (μs)'),
+            ('GPU_Window', 'Window Kernel Time (μs)')
+        ]
+
         n_min, n_max = comparison_df['N'].min(), comparison_df['N'].max()
-        
-        # Main plot: Total Execution Time Comparison with Speedup
-        ax.loglog(comparison_df['N'], comparison_df['GPU_Total_single'], 'o-', 
-                 linewidth=3, markersize=10, label='Single GPU', color='blue')
-        ax.loglog(comparison_df['N'], comparison_df['GPU_Total_multi'], 's-', 
-                 linewidth=3, markersize=10, label='Multi-GPU', color='red')
-        
-        # Add speedup annotations
+
+        fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+        axes = axes.flatten()
+        fig.suptitle('Single GPU vs Multi-GPU MSM: Component-wise Comparison', fontsize=18, fontweight='bold')
+
+        for idx, (col, ylabel) in enumerate(metrics):
+            ax = axes[idx]
+            ax.loglog(comparison_df['N'], comparison_df[f'{col}_single'], 'o-',
+                      linewidth=2.5, markersize=6, label='Single GPU', color='tab:blue')
+            ax.loglog(comparison_df['N'], comparison_df[f'{col}_multi'], 's-',
+                      linewidth=2.5, markersize=6, label='Multi-GPU', color='tab:red')
+            ax.set_title(col.replace('_', ' '), fontsize=14, fontweight='bold')
+            ax.set_xlabel('N (log2)', fontsize=12)
+            ax.set_ylabel(ylabel, fontsize=12)
+            ax.grid(True, which='both', alpha=0.3)
+            ax.set_xscale('log', base=2)
+            ax.xaxis.set_major_locator(LogLocator(base=2))
+            ax.set_xlim(n_min * 0.8, n_max * 1.2)
+            ax.legend(fontsize=10)
+
+        # Speedup subplot
         speedup = comparison_df['GPU_Total_single'] / comparison_df['GPU_Total_multi']
-        for i, (n, sp) in enumerate(zip(comparison_df['N'], speedup)):
-            if sp > 1.5:  # Only annotate significant speedups
-                ax.annotate(f'{sp:.1f}x', 
-                           xy=(n, comparison_df['GPU_Total_multi'].iloc[i]),
-                           xytext=(10, 10), textcoords='offset points',
-                           fontsize=9, ha='center', va='bottom',
-                           bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
-        
-        ax.set_xlabel('Problem Size (N)', fontsize=14)
-        ax.set_ylabel('Total Execution Time (μs)', fontsize=14)
-        ax.set_title('Performance Comparison', fontsize=16, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=12)
+        ax = axes[len(metrics)]
+        ax.semilogx(comparison_df['N'], speedup, 'd-', linewidth=2.5, markersize=6, color='tab:green')
+        ax.axhline(1.0, color='gray', linestyle='--', linewidth=1)
+        ax.set_title('Total Speedup (Single / Multi)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('N (log2)', fontsize=12)
+        ax.set_ylabel('Speedup (×)', fontsize=12)
+        ax.grid(True, which='both', alpha=0.3)
         ax.set_xscale('log', base=2)
         ax.xaxis.set_major_locator(LogLocator(base=2))
         ax.set_xlim(n_min * 0.8, n_max * 1.2)
-        
-        plt.tight_layout()
-        plt.savefig('../plots/gpu_comparison.png', dpi=300, bbox_inches='tight')
+
+        # Hide any unused subplot
+        if len(axes) > len(metrics) + 1:
+            for j in range(len(metrics) + 1, len(axes)):
+                fig.delaxes(axes[j])
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+        out_path = os.path.join(plots_dir, 'gpu_comparison_components.png')
+        plt.savefig(out_path, dpi=300, bbox_inches='tight')
+        print(f"Saved plot to: {out_path}")
         plt.show()
         
         # Console analysis

@@ -295,46 +295,84 @@ int main(int argc, char** argv) {
         CUDA_CALL(cudaMalloc(&d_bucket_sums,    total_buckets * (int)sizeof(ECPoint)));
         CUDA_CALL(cudaMalloc(&d_window_sums,    windows * (int)sizeof(ECPoint)));
 
-        auto gpu_tx_h2d_start = std::chrono::high_resolution_clock::now();
+        // CUDA events for GPU timings
+        cudaEvent_t ev_h2d_start, ev_h2d_end;
+        cudaEvent_t ev_bucket_start, ev_bucket_end;
+        cudaEvent_t ev_window_start, ev_window_end;
+        cudaEvent_t ev_d2h_start, ev_d2h_end;
+        cudaEvent_t ev_overall_start, ev_overall_end;
+        CUDA_CALL(cudaEventCreate(&ev_h2d_start));
+        CUDA_CALL(cudaEventCreate(&ev_h2d_end));
+        CUDA_CALL(cudaEventCreate(&ev_bucket_start));
+        CUDA_CALL(cudaEventCreate(&ev_bucket_end));
+        CUDA_CALL(cudaEventCreate(&ev_window_start));
+        CUDA_CALL(cudaEventCreate(&ev_window_end));
+        CUDA_CALL(cudaEventCreate(&ev_d2h_start));
+        CUDA_CALL(cudaEventCreate(&ev_d2h_end));
+        CUDA_CALL(cudaEventCreate(&ev_overall_start));
+        CUDA_CALL(cudaEventCreate(&ev_overall_end));
+
+        // H2D transfer timing using CUDA events (default stream)
+        CUDA_CALL(cudaEventRecord(ev_overall_start, 0));
+        CUDA_CALL(cudaEventRecord(ev_h2d_start, 0));
         if (total_points)
             CUDA_CALL(cudaMemcpy(d_all_points, all_points.data(), total_points * sizeof(ECPoint), cudaMemcpyHostToDevice));
         CUDA_CALL(cudaMemcpy(d_bucket_sizes,   bucket_sizes.data(),   total_buckets * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CALL(cudaMemcpy(d_bucket_offsets, bucket_offsets.data(), (total_buckets + 1) * sizeof(int), cudaMemcpyHostToDevice));
-        auto gpu_tx_h2d_end = std::chrono::high_resolution_clock::now();
-        auto gpu_tx_h2d_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_tx_h2d_end - gpu_tx_h2d_start).count();
+        CUDA_CALL(cudaEventRecord(ev_h2d_end, 0));
+        CUDA_CALL(cudaEventSynchronize(ev_h2d_end));
+        float ms_tmp = 0.0f;
+        CUDA_CALL(cudaEventElapsedTime(&ms_tmp, ev_h2d_start, ev_h2d_end));
+        long long gpu_tx_h2d_us = (long long)(ms_tmp * 1000.0f);
 
-        //  Step 6: GPU bucket sums 
+        //  Step 6: GPU bucket sums (timed with CUDA events)
         int threads = 256;
         int blocks  = (total_buckets + threads - 1) / threads;
 
-        auto gpu_bucket_start = std::chrono::high_resolution_clock::now();
+        CUDA_CALL(cudaEventRecord(ev_bucket_start, 0));
         sum_bucket_points_kernel<<<blocks, threads>>>(d_all_points, d_bucket_sizes, d_bucket_offsets, d_bucket_sums, total_buckets);
-        CUDA_CALL(cudaDeviceSynchronize());
-        auto gpu_bucket_end = std::chrono::high_resolution_clock::now();
-        auto gpu_bucket_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_bucket_end - gpu_bucket_start).count();
+        CUDA_CALL(cudaEventRecord(ev_bucket_end, 0));
+        CUDA_CALL(cudaEventSynchronize(ev_bucket_end));
+        CUDA_CALL(cudaEventElapsedTime(&ms_tmp, ev_bucket_start, ev_bucket_end));
+        long long gpu_bucket_us = (long long)(ms_tmp * 1000.0f);
 
-        //  Step 7: GPU window sums (descending running-sum weighting) 
+        //  Step 7: GPU window sums (timed with CUDA events)
         int window_threads = 256;
         int window_blocks  = (windows + window_threads - 1) / window_threads;
 
-        auto gpu_window_start = std::chrono::high_resolution_clock::now();
+        CUDA_CALL(cudaEventRecord(ev_window_start, 0));
         sum_window_buckets_kernel<<<window_blocks, window_threads>>>(d_bucket_sums, d_window_sums, windows, num_buckets);
-        CUDA_CALL(cudaDeviceSynchronize());
-        auto gpu_window_end = std::chrono::high_resolution_clock::now();
-        auto gpu_window_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_window_end - gpu_window_start).count();
+        CUDA_CALL(cudaEventRecord(ev_window_end, 0));
+        CUDA_CALL(cudaEventSynchronize(ev_window_end));
+        CUDA_CALL(cudaEventElapsedTime(&ms_tmp, ev_window_start, ev_window_end));
+        long long gpu_window_us = (long long)(ms_tmp * 1000.0f);
 
-        //  Step 8: Copy back window sums 
+        //  Step 8: Copy back window sums (timed with CUDA events)
         std::vector<ECPoint> gpu_window_sums(windows);
-        auto gpu_tx_d2h_start = std::chrono::high_resolution_clock::now();
+        CUDA_CALL(cudaEventRecord(ev_d2h_start, 0));
         CUDA_CALL(cudaMemcpy(gpu_window_sums.data(), d_window_sums, windows * sizeof(ECPoint), cudaMemcpyDeviceToHost));
-        auto gpu_tx_d2h_end = std::chrono::high_resolution_clock::now();
-        auto gpu_tx_d2h_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_tx_d2h_end - gpu_tx_d2h_start).count();
+        CUDA_CALL(cudaEventRecord(ev_d2h_end, 0));
+        CUDA_CALL(cudaEventSynchronize(ev_d2h_end));
+        CUDA_CALL(cudaEventRecord(ev_overall_end, 0));
+        CUDA_CALL(cudaEventSynchronize(ev_overall_end));
+        CUDA_CALL(cudaEventElapsedTime(&ms_tmp, ev_d2h_start, ev_d2h_end));
+        long long gpu_tx_d2h_us = (long long)(ms_tmp * 1000.0f);
 
-        CUDA_CALL(cudaFree(d_all_points));
-        CUDA_CALL(cudaFree(d_bucket_sizes));
-        CUDA_CALL(cudaFree(d_bucket_offsets));
-        CUDA_CALL(cudaFree(d_bucket_sums));
-        CUDA_CALL(cudaFree(d_window_sums));
+        // Compute overall elapsed using events
+        CUDA_CALL(cudaEventElapsedTime(&ms_tmp, ev_overall_start, ev_overall_end));
+        long long total_gpu_us = (long long)(ms_tmp * 1000.0f);
+
+        // Destroy CUDA events
+        CUDA_CALL(cudaEventDestroy(ev_h2d_start));
+        CUDA_CALL(cudaEventDestroy(ev_h2d_end));
+        CUDA_CALL(cudaEventDestroy(ev_bucket_start));
+        CUDA_CALL(cudaEventDestroy(ev_bucket_end));
+        CUDA_CALL(cudaEventDestroy(ev_window_start));
+        CUDA_CALL(cudaEventDestroy(ev_window_end));
+        CUDA_CALL(cudaEventDestroy(ev_d2h_start));
+        CUDA_CALL(cudaEventDestroy(ev_d2h_end));
+        CUDA_CALL(cudaEventDestroy(ev_overall_start));
+        CUDA_CALL(cudaEventDestroy(ev_overall_end));
 
         //  Step 9: Final fold on CPU using GPU window sums 
         auto cpu_final_start = std::chrono::high_resolution_clock::now();
@@ -352,12 +390,36 @@ int main(int argc, char** argv) {
         std::cout << "Result (affine): x=" << result.X.value << " y=" << result.Y.value << "\n";
 
         // timings summary
-        auto total_gpu_us = gpu_tx_h2d_us + gpu_bucket_us + gpu_window_us + gpu_tx_d2h_us;
         auto gpu_comp_us = gpu_bucket_us + gpu_window_us;
         
-        std::cout << "GPU H2D: " << gpu_tx_h2d_us << " us, GPU bucket: " << gpu_bucket_us
-                  << " us, GPU window: " << gpu_window_us << " us, GPU D2H: " << gpu_tx_d2h_us << " us\n";
-        std::cout << "GPU total: " << total_gpu_us << " us | GPU compute only: " << gpu_comp_us << " us\n";
+        // Component-wise breakdown with percentages and bandwidth estimates
+        double total_us_d = static_cast<double>(total_gpu_us);
+        auto pct = [&](long long part_us) -> double {
+            return total_us_d > 0.0 ? (static_cast<double>(part_us) / total_us_d) * 100.0 : 0.0;
+        };
+
+        // Estimate transferred bytes
+        const size_t bytes_h2d = static_cast<size_t>(std::max(1, total_points)) * sizeof(ECPoint)
+                               + static_cast<size_t>(total_buckets) * sizeof(int)
+                               + static_cast<size_t>(total_buckets + 1) * sizeof(int);
+        const size_t bytes_d2h = static_cast<size_t>(windows) * sizeof(ECPoint);
+
+        auto mbps = [](size_t bytes, long long us) -> double {
+            if (us <= 0) return 0.0;
+            // Using 1 MB = 1e6 bytes. MB/s = (bytes/us)
+            return static_cast<double>(bytes) / static_cast<double>(us);
+        };
+
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "GPU total (events): " << total_gpu_us << " us\n";
+        std::cout << "  - H2D:    " << gpu_tx_h2d_us << " us (" << pct(gpu_tx_h2d_us) << "%)"
+                  << ", ~" << (bytes_h2d / 1e6) << " MB, " << mbps(bytes_h2d, gpu_tx_h2d_us) << " MB/s\n";
+        std::cout << "  - Bucket: " << gpu_bucket_us << " us (" << pct(gpu_bucket_us) << "%)\n";
+        std::cout << "  - Window: " << gpu_window_us << " us (" << pct(gpu_window_us) << "%)\n";
+        std::cout << "  - D2H:    " << gpu_tx_d2h_us << " us (" << pct(gpu_tx_d2h_us) << "%)"
+                  << ", ~" << (bytes_d2h / 1e6) << " MB, " << mbps(bytes_d2h, gpu_tx_d2h_us) << " MB/s\n";
+        std::cout << "GPU compute only: " << gpu_comp_us << " us ("
+                  << pct(gpu_comp_us) << "%)\n";
 
         csv_file << N << "," << total_gpu_us << "," << gpu_comp_us << ","
                  << (gpu_tx_h2d_us + gpu_tx_d2h_us) << "," << gpu_bucket_us << "," << gpu_window_us << "\n";
