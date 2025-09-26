@@ -97,7 +97,7 @@ def plot_performance_comparison(single_gpu_csv='../data/single_gpu_timing.csv',
                 fig.delaxes(axes[j])
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.97])
-        out_path = os.path.join(plots_dir, 'gpu_comparison_components.png')
+        out_path = os.path.join(plots_dir, 'gpu_comparison_components(after batching single gpu).png')
         plt.savefig(out_path, dpi=300, bbox_inches='tight')
         print(f"Saved plot to: {out_path}")
         plt.show()
@@ -158,6 +158,10 @@ def plot_performance_comparison(single_gpu_csv='../data/single_gpu_timing.csv',
 
 if __name__ == "__main__":
     # Allow command line arguments for CSV files
-    single_csv = sys.argv[1] if len(sys.argv) > 1 else 'single_gpu_timing.csv'
-    multi_csv = sys.argv[2] if len(sys.argv) > 2 else 'multi_gpu_timing.csv'
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
+    default_single = os.path.join(project_root, 'data', 'single_gpu_timing.csv')
+    default_multi = os.path.join(project_root, 'data', 'multi_gpu_timing.csv')
+    single_csv = sys.argv[1] if len(sys.argv) > 1 else default_single
+    multi_csv = sys.argv[2] if len(sys.argv) > 2 else default_multi
     plot_performance_comparison(single_csv, multi_csv) 

@@ -174,11 +174,11 @@ int main(int argc, char** argv) {
         std::cout << "Using multi-GPU setup with " << device_count << " GPUs\n";
     }
 
-    std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608};
-    //std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608,12000000,16777216};
+    //std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608};
+    std::vector<int> problem_sizes = {64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576, 2097152,3000000,4194304,6000000,8388608,12000000,16777216};
     //std::string csv_name = "test_timing.csv";
     //std::string csv_name = "gpu_only_timing.csv";
-    std::string csv_name = "multi_gpu_timing.csv";
+    std::string csv_name = "data/multi_gpu_timing.csv";
     bool print_input = false;
     bool run_toy2 = false;
     for (int ai = 1; ai < argc; ++ai) {
